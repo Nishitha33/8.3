@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>RBAC Demo — Admin / Moderator / User</title>
+<!-- React (UMD) -->
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+<style>
+  :root{
+    --bg:#0f1724; --card:#0b1220; --muted:#94a3b8; --accent:#7c3aed; --success:#10b981; --danger:#ef4444;
+    --glass: rgba(255,255,255,0.02);
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; font-family:Inter,system-ui,Arial; background:linear-gradient(180deg,#071021 0%, #081426 60%);
+    color:#e6eef8; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px;
+  }
+  .app { width:100%; max-width:980px; display:grid; grid-template-columns: 1fr 360px; gap:18px; }
+  .card {
+    background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+    border-radius:12px; padding:18px; box-shadow: 0 6px 30px rgba(2,6,23,0.6);
+    border: 1px solid rgba(255,255,255,0.03);
+  }
+  h2{ margin:0 0 10px 0; font-size:18px; color:#fff }
+  label{ display:block; margin-top:10px; color:var(--muted); font-size:13px }
+  input, select { width:100%; padding:8px 10px; margin-top:6px; border-radius:8px; border:1px solid rgba(255,255,255,0.03); background:transparent; color:inherit; }
+  .row{ display:flex; gap:8px; margin-top:12px }
+  button{ padding:8px 12px; border-radius:8px; border:none; cursor:pointer; background:linear-gradient(90deg,var(--accent), #5b21b6); color:white; font-weight:700 }
+  button.ghost{ background:transparent; border:1px solid rgba(255,255,255,0.04); color:var(--muted) }
+  button.small{ padding:6px 8px; font-size:13px }
+  .muted{ color:var(--muted); font-size:13px }
+  .role-tag { display:inline-block; padding:6px 10px; border-radius:999px; background:rgba(255,255,255,0.03); margin-right:8px; font-weight:700; font-size:13px }
+  .denied { color:var(--danger); font-weight:700; margin-top:8px }
+  .success { color:var(--success); font-weight:700; margin-top:8px }
+  .user-row { display:flex; justify-content:space-between; align-items:center; padding:10px; border-radius:10px; background:rgba(255,255,255,0.02); margin-top:8px }
+  .note { margin-top:10px; color:var(--muted); font-size:13px }
+  @media (max-width:900px){ .app{ grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+  <div id="root" style="width:100%;"></div>
+
+<script>
+(function(React, ReactDOM){
+  const { useState, useEffect, useContext, createContext } = React;
+
+  /*******************
+   * Simulated "DB" of users
+   * In a real app you'd have a backend and persistent storage.
+   *******************/
+  const seedUsers = [
+    { id: 'u1', username: 'alice', role: 'Admin' },
+    { id: 'u2', username: 'bob', role: 'Moderator' },
+    { id: 'u3', username: 'carol', role: 'User' },
+  ];
+
+  /*******************
+   * Auth Context + provider
+   * Stores "currentUser" and a tiny token carrying the role
+   *******************/
+  const AuthContext = createContext(null);
+
+  function createToken(user) {
+    // Simulate a JWT-like object (NOT secure). For demo only.
+    return btoa(JSON.stringify({ userId: user.id, username: user.username, role: user.role }));
+  }
+  function parseToken(token) {
+    try {
+      return JSON.parse(atob(token));
+    } catch (e) { return null; }
+  }
+
+  function AuthProvider({ children }) {
+    const [currentUser, setCurrentUser] = useState(null); // { id, username, role }
+    const [token, setToken] = useState(null);
+
+    // login: find user by username -> create token
+    function login(username) {
+      const u = seedUsers.find(x => x.username === username);
+      if (!u) return { ok: false, message: 'User not found' };
+      const t = createToken(u);
+      setCurrentUser({ id: u.id, username: u.username, role: u.role });
+      setToken(t);
+      return { ok: true, token: t };
+    }
+
+    // logout
+    function logout() {
+      setCurrentUser(null);
+      setToken(null);
+    }
+
+    // update role (Admin action)
+    function updateUserRole(userId, newRole) {
+      // mutate seedUsers (demo only)
+      const u = seedUsers.find(x => x.id === userId);
+      if (!u) return { ok: false, message: 'Not found' };
+      u.role = newRole;
+      // if current user was updated, reflect it
+      if (currentUser && currentUser.id === userId) {
+        const newToken = createToken(u);
+        setToken(newToken);
+        setCurrentUser({ id: u.id, username: u.username, role: u.role });
+      }
+      return { ok: true };
+    }
+
+    const value = { currentUser, token, login, logout, updateUserRole, seedUsers };
+    return React.createElement(AuthContext.Provider, { value }, children);
+  }
+
+  /*******************
+   * Authorization HOC / component
+   * Usage: <Authorize roles={['Admin','Moderator']} fallback={<Denied/>}><ProtectedComp/></Authorize>
+   *******************/
+  function Authorize({ roles = [], children, fallback = null }) {
+    const auth = useContext(AuthContext);
+    const role = auth.currentUser?.role || null;
+    const allowed = roles.length === 0 ? true : (role && roles.includes(role));
+    return allowed ? children : (fallback || React.createElement(AccessDenied, { required: roles }));
+  }
+
+  function AccessDenied({ required=[] }) {
+    return React.createElement('div', { className: 'denied' }, `Access denied — requires role: ${required.join(' | ')}`);
+  }
+
+  /*******************
+   * UI: LoginForm
+   *******************/
+  function LoginForm() {
+    const auth = useContext(AuthContext);
+    const [username, setUsername] = useState('');
+    const [msg, setMsg] = useState('');
+
+    function handleLogin(e) {
+      e.preventDefault();
+      const r = auth.login(username.trim());
+      if (!r.ok) setMsg(r.message);
+      else setMsg('Logged in as ' + username);
+    }
+
+    return React.createElement('div', null,
+      React.createElement('h2', null, 'Sign In'),
+      React.createElement('form', { onSubmit: handleLogin },
+        React.createElement('label', null, 'Username (type one of: alice, bob, carol)'),
+        React.createElement('input', { value: username, onChange: e => setUsername(e.target.value), placeholder: 'username' }),
+        React.createElement('div', { className: 'row' },
+          React.createElement('button', { type: 'submit' }, 'Sign in'),
+          React.createElement('button', { type: 'button', className:'ghost', onClick: () => { setUsername('alice'); setMsg(''); } }, 'prefill alice'),
+          React.createElement('button', { type: 'button', className:'ghost', onClick: () => { setUsername('bob'); setMsg(''); } }, 'prefill bob')
+        )
+      ),
+      msg && React.createElement('div', { className: msg.startsWith('Logged') ? 'success' : 'denied' }, msg),
+      React.createElement('div', { className: 'note' }, 'This demo uses an in-memory user list. In production, authenticate server-side and verify roles in middleware.')
+    );
+  }
+
+  /*******************
+   * UI: Topbar showing current user + logout
+   *******************/
+  function TopBar() {
+    const auth = useContext(AuthContext);
+    const user = auth.currentUser;
+    return React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center' } },
+      React.createElement('div', null,
+        React.createElement('span', { className:'role-tag' }, user ? `${user.username} — ${user.role}` : 'Not signed in')
+      ),
+      React.createElement('div', null,
+        user ? React.createElement('button', { className:'ghost small', onClick: () => auth.logout() }, 'Logout') : null
+      )
+    );
+  }
+
+  /*******************
+   * AdminPanel (Admin-only)
+   * - lists users
+   * - change role dropdown (Admin can change roles of others)
+   *******************/
+  function AdminPanel() {
+    const auth = useContext(AuthContext);
+    const [users, setUsers] = useState(auth.seedUsers.map(u => ({...u}))); // local copy for re-render
+    // refresh view when seedUsers mutated
+    function refresh() { setUsers(auth.seedUsers.map(u => ({...u}))); }
+
+    async function changeRole(userId, newRole) {
+      const res = auth.updateUserRole(userId, newRole);
+      if (!res.ok) {
+        alert('Update failed: ' + res.message);
+      } else {
+        refresh();
+      }
+    }
+
+    return React.createElement('div', null,
+      React.createElement('h2', null, 'Admin Panel'),
+      React.createElement('div', { className:'muted' }, 'Manage users and roles (Admin only)'),
+      users.map(u => React.createElement('div', { key: u.id, className:'user-row' },
+        React.createElement('div', null, React.createElement('div', { style:{fontWeight:700} }, u.username), React.createElement('div', { className:'muted' }, `id: ${u.id}`)),
+        React.createElement('div', null,
+          React.createElement('select', { defaultValue: u.role, onChange: (e) => changeRole(u.id, e.target.value) },
+            React.createElement('option', { value:'Admin' }, 'Admin'),
+            React.createElement('option', { value:'Moderator' }, 'Moderator'),
+            React.createElement('option', { value:'User' }, 'User')
+          )
+        )
+      ))
+    );
+  }
+
+  /*******************
+   * ModeratorPanel (Moderator or Admin)
+   *******************/
+  function ModeratorPanel() {
+    return React.createElement('div', null,
+      React.createElement('h2', null, 'Moderator Tools'),
+      React.createElement('div', { className:'muted' }, 'Moderators can review content (demo).'),
+      React.createElement('div', { style:{ marginTop:10 } },
+        React.createElement('button', { className:'ghost small', onClick: ()=> alert('Reviewed flagged content (demo)') }, 'Review flagged content')
+      )
+    );
+  }
+
+  /*******************
+   * UserDashboard (User or above)
+   *******************/
+  function UserDashboard() {
+    return React.createElement('div', null,
+      React.createElement('h2', null, 'User Dashboard'),
+      React.createElement('div', { className:'muted' }, 'Accessible to Users, Moderators, and Admins.'),
+      React.createElement('div', { style:{ marginTop:10 } }, 'Welcome — here you would see your personal data, recent transactions, etc.')
+    );
+  }
+
+  /*******************
+   * PublicInfo (unprotected)
+   *******************/
+  function PublicInfo() {
+    return React.createElement('div', null,
+      React.createElement('h2', null, 'Public Info'),
+      React.createElement('div', { className:'muted' }, 'This area is visible to everyone (no auth required).')
+    );
+  }
+
+  /*******************
+   * App: wiring everything together
+   *******************/
+  function App() {
+    return React.createElement(AuthProvider, null,
+      React.createElement('div', { className:'app' },
+        React.createElement('div', { className:'card' },
+          React.createElement(TopBar, null),
+          React.createElement('hr', { style:{ border:'none', borderTop:'1px solid rgba(255,255,255,0.03)', margin:'12px 0' } }),
+          React.createElement(PublicInfo, null),
+          React.createElement('div', { style:{ marginTop:12 } },
+            React.createElement('h2', null, 'Sign In / Switch User'),
+            React.createElement(LoginForm, null)
+          ),
+          React.createElement('div', { style:{ marginTop:18 } },
+            React.createElement(Authorize, { roles:['User','Moderator','Admin'] },
+              React.createElement(UserDashboard, null)
+            ),
+            // Moderator panel allowed for Moderator OR Admin
+            React.createElement(Authorize, { roles:['Moderator','Admin'] },
+              React.createElement(ModeratorPanel, null)
+            ),
+            // Admin-only
+            React.createElement(Authorize, { roles:['Admin'] },
+              React.createElement(AdminPanel, null)
+            )
+          )
+        ),
+
+        React.createElement('div', { className:'card' },
+          React.createElement('h2', null, 'Quick Guide'),
+          React.createElement('div', { className:'muted' }, 'This demo enforces roles on the client side for illustration. Always enforce roles on the server side in production.'),
+          React.createElement('div', { style:{ marginTop:12 } },
+            React.createElement('div', { className:'muted' }, 'Seed users:'),
+            React.createElement('ul', null,
+              React.createElement('li', null, 'alice — Admin'),
+              React.createElement('li', null, 'bob — Moderator'),
+              React.createElement('li', null, 'carol — User')
+            )
+          ),
+          React.createElement('div', { style:{ marginTop:12 } },
+            React.createElement('h3', null, 'How RBAC works in this demo'),
+            React.createElement('ol', null,
+              React.createElement('li', null, 'Sign in as a seed user (username only).'),
+              React.createElement('li', null, 'Client stores a tiny token with the role (demo only).'),
+              React.createElement('li', null, 'Use the Authorize wrapper to protect UI parts by role.'),
+              React.createElement('li', null, 'Admin can change roles of other users — that updates in-memory list.')
+            )
+          ),
+          React.createElement('div', { className:'note' }, 'Remember: Never trust client-side role checks by themselves — always validate roles on server endpoints.')
+        )
+      )
+    );
+  }
+
+  // Mount
+  ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+
+})(window.React, window.ReactDOM);
+</script>
+</body>
+</html>
